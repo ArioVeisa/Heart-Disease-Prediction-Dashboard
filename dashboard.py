@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+from sklearn.naive_bayes import GaussianNB
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+
 
 st.set_page_config(
     page_title="Heart Disease Dashboard",
@@ -45,6 +48,69 @@ MODEL_METRICS = pd.DataFrame({
     "Gaussian Naive Bayes": ["87,50%", "88,35%", "89,22%", "88,78%", "0,9225"],
     "Model Terbaik": ["Naive Bayes", "Naive Bayes", "Naive Bayes", "Naive Bayes", "Naive Bayes"],
 })
+
+SAMPLE_PATIENTS = {
+    "Contoh Risiko Rendah": {
+        "Age": 42, "Sex": "F", "ChestPainType": "ATA", "RestingBP": 120,
+        "Cholesterol": 210, "FastingBS": 0, "RestingECG": "Normal", "MaxHR": 172,
+        "ExerciseAngina": "N", "Oldpeak": 0.2, "ST_Slope": "Up",
+    },
+    "Contoh Risiko Sedang": {
+        "Age": 54, "Sex": "M", "ChestPainType": "NAP", "RestingBP": 135,
+        "Cholesterol": 245, "FastingBS": 0, "RestingECG": "ST", "MaxHR": 142,
+        "ExerciseAngina": "N", "Oldpeak": 1.1, "ST_Slope": "Flat",
+    },
+    "Contoh Risiko Tinggi": {
+        "Age": 61, "Sex": "M", "ChestPainType": "ASY", "RestingBP": 150,
+        "Cholesterol": 280, "FastingBS": 1, "RestingECG": "LVH", "MaxHR": 115,
+        "ExerciseAngina": "Y", "Oldpeak": 2.6, "ST_Slope": "Flat",
+    },
+    "Contoh Silent Risk ASY": {
+        "Age": 57, "Sex": "M", "ChestPainType": "ASY", "RestingBP": 140,
+        "Cholesterol": 237, "FastingBS": 0, "RestingECG": "Normal", "MaxHR": 128,
+        "ExerciseAngina": "Y", "Oldpeak": 1.8, "ST_Slope": "Down",
+    },
+}
+
+
+@st.cache_resource
+def train_prediction_model():
+    df = pd.read_csv("heart.csv")
+    median_cholesterol = df.loc[df["Cholesterol"] != 0, "Cholesterol"].median()
+    median_restingbp = df.loc[df["RestingBP"] != 0, "RestingBP"].median()
+    df["Cholesterol"] = df["Cholesterol"].replace(0, median_cholesterol)
+    df["RestingBP"] = df["RestingBP"].replace(0, median_restingbp)
+
+    categorical_cols = ["Sex", "ChestPainType", "RestingECG", "ExerciseAngina", "ST_Slope"]
+    encoders = {}
+    for col in categorical_cols:
+        encoder = LabelEncoder()
+        df[col] = encoder.fit_transform(df[col])
+        encoders[col] = encoder
+
+    X = df.drop("HeartDisease", axis=1)
+    y = df["HeartDisease"]
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    model = GaussianNB()
+    model.fit(X_scaled, y)
+    return model, scaler, encoders, list(X.columns), median_cholesterol, median_restingbp
+
+
+def predict_patient(patient):
+    model, scaler, encoders, columns, median_cholesterol, median_restingbp = train_prediction_model()
+    patient = patient.copy()
+    if patient["Cholesterol"] == 0:
+        patient["Cholesterol"] = median_cholesterol
+    if patient["RestingBP"] == 0:
+        patient["RestingBP"] = median_restingbp
+    for col, encoder in encoders.items():
+        patient[col] = encoder.transform([patient[col]])[0]
+    input_df = pd.DataFrame([patient], columns=columns)
+    input_scaled = scaler.transform(input_df)
+    prediction = int(model.predict(input_scaled)[0])
+    probability = float(model.predict_proba(input_scaled)[0][1])
+    return prediction, probability
 
 st.markdown("""
 <style>
@@ -179,6 +245,60 @@ with col_roc:
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.image("output/roc_curve_nb.png", use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+st.divider()
+st.markdown('<div class="section-title">Prediksi Pasien Baru</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="text-card">
+Bagian ini membuat dashboard menjadi interaktif. Pilih contoh data pasien yang sudah disiapkan atau isi manual data klinis pasien baru, lalu sistem akan menghitung probabilitas risiko penyakit jantung menggunakan model <b>Gaussian Naive Bayes</b>.
+</div>
+""", unsafe_allow_html=True)
+
+selected_sample = st.selectbox("Pilih contoh data cepat", list(SAMPLE_PATIENTS.keys()))
+sample = SAMPLE_PATIENTS[selected_sample]
+
+with st.form("prediction_form"):
+    left_input, right_input = st.columns(2)
+    with left_input:
+        st.markdown("### Profil Klinis")
+        age = st.number_input("Usia (tahun)", 20, 90, int(sample["Age"]))
+        sex = st.selectbox("Jenis Kelamin", ["M", "F"], index=["M", "F"].index(sample["Sex"]), format_func=lambda x: "Laki-laki" if x == "M" else "Perempuan")
+        chest_pain = st.selectbox("Tipe Nyeri Dada", ["TA", "ATA", "NAP", "ASY"], index=["TA", "ATA", "NAP", "ASY"].index(sample["ChestPainType"]))
+        resting_bp = st.number_input("Resting Blood Pressure (mmHg)", 0, 220, int(sample["RestingBP"]))
+        cholesterol = st.number_input("Cholesterol (mg/dL)", 0, 650, int(sample["Cholesterol"]))
+        fasting_bs = st.selectbox("Fasting Blood Sugar > 120 mg/dL", [0, 1], index=[0, 1].index(sample["FastingBS"]), format_func=lambda x: "Ya" if x == 1 else "Tidak")
+    with right_input:
+        st.markdown("### Hasil Pemeriksaan")
+        resting_ecg = st.selectbox("Resting ECG", ["Normal", "ST", "LVH"], index=["Normal", "ST", "LVH"].index(sample["RestingECG"]))
+        max_hr = st.number_input("Max Heart Rate", 60, 220, int(sample["MaxHR"]))
+        exercise_angina = st.selectbox("Exercise Angina", ["N", "Y"], index=["N", "Y"].index(sample["ExerciseAngina"]), format_func=lambda x: "Ya" if x == "Y" else "Tidak")
+        oldpeak = st.number_input("Oldpeak / ST Depression", -3.0, 7.0, float(sample["Oldpeak"]), step=0.1)
+        st_slope = st.selectbox("ST Slope", ["Up", "Flat", "Down"], index=["Up", "Flat", "Down"].index(sample["ST_Slope"]))
+        submitted = st.form_submit_button("Hitung Prediksi Risiko", use_container_width=True)
+
+if submitted:
+    patient = {
+        "Age": age, "Sex": sex, "ChestPainType": chest_pain, "RestingBP": resting_bp,
+        "Cholesterol": cholesterol, "FastingBS": fasting_bs, "RestingECG": resting_ecg,
+        "MaxHR": max_hr, "ExerciseAngina": exercise_angina, "Oldpeak": oldpeak, "ST_Slope": st_slope,
+    }
+    prediction, probability = predict_patient(patient)
+    risk_percent = probability * 100
+    status = "Berisiko Sakit Jantung" if prediction == 1 else "Tidak Terindikasi Sakit Jantung"
+    color = "#E86F51" if prediction == 1 else "#315F38"
+    st.markdown(f"""
+    <div class="glass-panel" style="border-left:8px solid {color};">
+        <div style="font-size:18px;font-weight:800;color:{color};">Hasil Prediksi</div>
+        <div style="font-family:Fraunces,serif;font-size:42px;color:{color};margin:8px 0;">{risk_percent:.2f}%</div>
+        <div style="font-size:22px;font-weight:800;">{status}</div>
+        <p style="line-height:1.7;margin-top:12px;">Probabilitas menunjukkan peluang pasien masuk kelas HeartDisease = 1 berdasarkan pola pada dataset. Hasil ini adalah simulasi machine learning untuk pendukung keputusan, bukan diagnosis medis final.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    st.progress(min(max(probability, 0), 1))
+    st.dataframe(pd.DataFrame([patient]), use_container_width=True, hide_index=True)
+
 
 st.divider()
 st.markdown('<div class="section-title">Kesimpulan Akhir</div>', unsafe_allow_html=True)
